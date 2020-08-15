@@ -12,6 +12,8 @@
  * @var integer $maxage     Cache max age in seconds
  * @var integer $expire     Cache expire in seconds
  */
+
+ 
 if ($modx->event->name == 'OnWebPagePrerender') {
     if ($modx->getOption('lastmodified.prevent_authorized') && ($modx->user->get('username') !== $modx->getOption('default_username'))) {
         return '';
@@ -60,6 +62,32 @@ if ($modx->event->name == 'OnWebPagePrerender') {
     header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $dtm) . ' GMT');
     header('Cache-control: ' . $rule . ', max-age=' . $maxage);
     header('Expires: ' . gmdate('D, d M Y H:i:s', time() + $expire));
+    
+
+    // Minify & Cache
+    $options = array(xPDO::OPT_CACHE_KEY=>'minify_page');
+    
+    if( strpos( $_SERVER['HTTP_ACCEPT'], 'image/webp' ) !== false ) { // webp is supported!
+        $cache_key= md5( MODX_SITE_URL.parse_url($_SERVER['REQUEST_URI'])['path'].'webp' );
+    } else {
+        $cache_key= md5( MODX_SITE_URL.parse_url($_SERVER['REQUEST_URI'])['path'] );
+    }
+    
+    $cached_page= $modx->cacheManager->get($cache_key, $options);
+    $output= &$modx->resource->_output;
+
+    if( empty($cached_page) ){
+        minify_html($output);
+        
+        if( strpos( $_SERVER['HTTP_ACCEPT'], 'image/webp' ) !== false ) { // webp is supported!
+            image_webp_replace($output);
+        }
+
+        $modx->cacheManager->set($cache_key, $output, 0, $options);
+    } else {
+        die($cached_page);
+    }
+    
     return '';
 }
 
@@ -71,13 +99,10 @@ if ($modx->event->name == 'OnWebPagePrerender') {
  * @var modResource $parent Parent resource object
  */
 if ($modx->event->name == 'OnDocFormSave') {
-
     if ($modx->getOption('lastmodified.update_start')) {
-
         $mainId = $modx->getOption('site_start');
 
         if ($mainId > 0 && $mainId !== $id) {
-
             $main = $modx->getObject('modResource', $mainId);
 
             if (!$main instanceof modResource) {
@@ -90,7 +115,6 @@ if ($modx->event->name == 'OnDocFormSave') {
 
             unset($main);
         }
-
         unset($mainId);
     }
 
@@ -124,4 +148,110 @@ if ($modx->event->name == 'OnDocFormSave') {
 
         return '';
     }
+}
+
+
+
+function image_webp_replace(&$output){ // Подмена картинок в контенте, на webp
+    $imgs = [];
+    $uniq_imgs= [];
+    preg_match_all('/<img[^>]+>/i',$output, $result);
+    
+    if (count($result))	{
+    	foreach($result[0] as $img_tag)	{			
+    		preg_match('/(src)=("[^"]*")/i',$img_tag, $img[$img_tag]);						
+    		$img_real = str_replace('"','',$img[$img_tag][2]);
+    		$img_real = str_replace('./','',$img_real);			
+    
+     	 	if ((strpos($img_real, '.jpg')!==false) or (strpos($img_real, '.jpeg')!==false) or (strpos($img_real, '.png')!==false)) {
+     	 	    if( !in_array($img_real, $uniq_imgs) ){
+     	 	        $uniq_imgs[]= $img_real;
+     	 	        
+     	 	        $abs= rel2abs_img( $img_real, MODX_SITE_URL.parse_url($_SERVER['REQUEST_URI'])['path'] );
+     	 	        $abs_base= str_replace('//', '/', MODX_BASE_PATH.$abs);
+     	 	        
+     	 	        $webp= '/webp'.$abs.'.webp';
+     	 	        $webp_base= str_replace('//', '/', MODX_BASE_PATH.$webp);
+     	 	        
+     	 	        if( file_exists($abs_base) && file_exists($webp_base) ){
+     	 	            $output= str_replace($img_real, $webp, $output);
+     	 	            $imgs[]= $abs;
+     	 	        }
+     	 	    }
+     	 	}
+    	}
+    } 
+}
+
+
+
+
+function minify_html(&$output){
+    //remove redundant (white-space) characters
+    $replace = array(
+        //remove tabs before and after HTML tags
+        '/\>[^\S ]+/s'   => '>',
+        '/[^\S ]+\</s'   => '<',
+        //shorten multiple whitespace sequences; keep new-line characters because they matter in JS!!!
+        '/([\t ])+/s'  => ' ',
+        //remove leading and trailing spaces
+        '/^([\t ])+/m' => '',
+        '/([\t ])+$/m' => '',
+        // remove JS line comments (simple only); do NOT remove lines containing URL (e.g. 'src="http://server.com/"')!!!
+        '~//[a-zA-Z0-9 ]+$~m' => '',
+        //remove empty lines (sequence of line-end and white-space characters)
+        '/[\r\n]+([\t ]?[\r\n]+)+/s'  => "\n",
+        //remove empty lines (between HTML tags); cannot remove just any line-end characters because in inline JS they can matter!
+        '/\>[\r\n\t ]+\</s'    => '><',
+        //remove "empty" lines containing only JS's block end character; join with next line (e.g. "}\n}\n</script>" --> "}}</script>"
+        '/}[\r\n\t ]+/s'  => '}',
+        '/}[\r\n\t ]+,[\r\n\t ]+/s'  => '},',
+        //remove new-line after JS's function or condition start; join with next line
+        '/\)[\r\n\t ]?{[\r\n\t ]+/s'  => '){',
+        '/,[\r\n\t ]?{[\r\n\t ]+/s'  => ',{',
+        //remove new-line after JS's line end (only most obvious and safe cases)
+        '/\),[\r\n\t ]+/s'  => '),',
+        //remove quotes from HTML attributes that does not contain spaces; keep quotes around URLs!
+        '~([\r\n\t ])?([a-zA-Z0-9]+)="([a-zA-Z0-9_/\\-]+)"([\r\n\t ])?~s' => '$1$2=$3$4', //$1 and $4 insert first white-space character found before/after attribute
+    );
+    $output = preg_replace(array_keys($replace), array_values($replace), $output);
+} 
+
+
+
+function rel2abs_img( $rel, $base ) {
+	// parse base URL  and convert to local variables: $scheme, $host,  $path
+	extract( parse_url( $base ) );
+
+	if ( strpos( $rel,"//" ) === 0 ) {
+		return $scheme . ':' . $rel;
+	}
+
+	// return if already absolute URL
+	if ( parse_url( $rel, PHP_URL_SCHEME ) != '' ) {
+		return $rel;
+	}
+
+	// queries and anchors
+	if ( $rel[0] == '#' || $rel[0] == '?' ) {
+		return $base . $rel;
+	}
+
+	// remove non-directory element from path
+	$path = preg_replace( '#/[^/]*$#', '', $path );
+
+	// destroy path if relative url points to root
+	if ( $rel[0] ==  '/' ) {
+		$path = '';
+	}
+
+	// dirty absolute URL
+	$abs = $path . "/" . $rel;
+
+	// replace '//' or  '/./' or '/foo/../' with '/'
+	$abs = preg_replace( "/(\/\.?\/)/", "/", $abs );
+	$abs = preg_replace( "/\/(?!\.\.)[^\/]+\/\.\.\//", "/", $abs );
+
+	// absolute URL is ready!
+	return $abs;
 }
