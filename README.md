@@ -5,7 +5,7 @@ and 304 response code if necessary (more info and site check on https://last-mod
 
 After installation use System settings lastmodified namespace to set preferable settings values. 
 
-Added minification of HTML code, and replacement of images with webp.
+Added minification of HTML code, and replacement of images with webp. You can use the plugin to convert images https://github.com/commeta/modxWebpConverter
 
 ### Available system settings (namespace lastmodified):
 
